@@ -1176,7 +1176,231 @@ class _ROI():
 	
 	def edit(self):
 		self.camObject.logger.log('Sorry, ROI editing is not supported.', severity=ub_utils.SEVERITY_WARNING)
+
+
+class _Ultralytics():
+	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, color, conf_threshold, model_name, verbose):
+		try:
+			from ultralytics import YOLO
+		except Exception as e:
+			self.camObject.logger.log(f'Error in ultralytics import: {e}.', severity=ub_utils.SEVERITY_ERROR)
+			return
+			
+		try:				
+			self.camObject = camObject  # This is the parent!
+								
+			self.idName   = idName          # "detect", "classify", "pose", "obb", "track", or "segment"
+			if (idName == 'pose'):
+				self.drawBox = False
+			else:
+				self.drawBox = True
+			self.model_name = model_name    # "yolo11n.pt", "yolo11n-cls.pt", etc
+			self.model = YOLO(model_name)
+			self.verbose = verbose
+			
+			
+			self.decorationID = None   # FIXU -- What will this be?
+			
+			self.res_rows = res_rows
+			self.res_cols = res_cols		
+			self.resolution = f'{res_cols}x{res_rows}'
+			
+			self.fps_target  = fps_target		# Hz
+			self.threadSleep = 1/fps_target		# seconds
 				
+			if (postFunction is None):
+				self.postFunction = ub_utils._passFunction
+			else:
+				self.postFunction = postFunction
+
+			self.color = color
+			
+			self.conf_threshold = conf_threshold
+			
+			self.fps = _make_fps_dict(recheckInterval=5)
+
+			self.deque = deque(maxlen=1)
+			self.deque.append(self._initDeque()) 
+			
+			self.isThreadActive = False
+
+		except Exception as e:
+			self.camObject.logger.log(f'Error in ultralytics init: {e}.', severity=ub_utils.SEVERITY_ERROR)
+
+	def _decorate(self, img, **kwargs):
+		# print('idName:', idName, 'ultralytics[idName]:', self.ultralytics[idName].deque[0])
+		# print(self.ultralytics[idName].deque[0])
+		ub_utils.decorateUltralytics(img, self.res_cols, self.res_rows, self.idName, self.deque[0], self.drawBox)
+		# FIXU -- Needs to match deque as defined in __init__
+
+	def _initDeque(self):
+		return {'class': [], 'class_conf': [], 'is_track': False, 'id': [], 
+				'xywh': [], 'xyxy': [],
+				'xywhr': [], 'xyxyxyxy': [],  
+				'keypoints': [], 'keypoints_conf': [],  
+				'masks_data': [], 'masks_xy': []}
+
+	def _processResults(self, results):
+		dequeInfo = self._initDeque()
+
+		np_res  = np.array([self.res_cols, self.res_rows])
+		np_res2 = np.array([self.res_cols, self.res_rows, self.res_cols, self.res_rows])
+		 
+		if results[0].boxes is not None:
+			bx = results[0].boxes 
+			dequeInfo['xywh'] = (bx.xywhn*(np_res2)).int().tolist()
+			# dequeInfo['xywhn'] = bx.xywhn.tolist()
+			# dequeInfo['xywhr'] = []
+			dequeInfo['xyxy'] = (bx.xyxyn*(np_res2)).int().tolist()
+			# dequeInfo['xyxyn'] = bx.xyxyn.tolist()
+			# dequeInfo['xyxyxyxy'] = []
+		elif results[0].obb is not None:
+			bx = results[0].obb
+			# dequeInfo['xywh'] = []
+			dequeInfo['xywhr'] = bx.xywhr.tolist()    # This is the center point of obb, in original resolution
+			# dequeInfo['xywhrn'] = bx.xywhrn.tolist()  # There's no such thing as `xywhrn` 
+			# dequeInfo['xyxy'] = []
+			dequeInfo['xyxyxyxy'] = (bx.xyxyxyxy*(np_res)).int().tolist()
+			# dequeInfo['xyxyxyxyn'] = bx.xyxyxyxyn.tolist()
+
+		else:
+			bx = None
+			'''
+			dequeInfo['class'] = []
+			dequeInfo['class_conf'] = []
+			dequeInfo['is_track'] = False 
+			dequeInfo['id'] = [] 
+			dequeInfo['xywh'] = []
+			dequeInfo['xywhr'] = []
+			dequeInfo['xyxy'] = []
+			dequeInfo['xyxyxyxy'] = []
+			'''
+			
+		if bx is not None:
+			dequeInfo['class'] = [results[0].names.get(key) for key in bx.cls.tolist()]
+			dequeInfo['class_conf'] = bx.conf.tolist()
+			dequeInfo['is_track'] = bx.is_track 
+			dequeInfo['id'] = bx.id.tolist() if bx.id is not None else []
+
+		if (results[0].keypoints is not None):
+			# dequeInfo['keypoints'] = results[0].keypoints.xyn.tolist() if results[0].keypoints.xyn is not None else []
+			# dequeInfo['keypoints'] = (results[0].keypoints.xyn*np_res).int().tolist() if results[0].keypoints.xyn is not None else []
+			dequeInfo['keypoints'] = np.array(results[0].keypoints.xyn*np_res).astype(int) if results[0].keypoints.has_visible else []
+			dequeInfo['keypoints_conf'] = results[0].keypoints.conf.tolist() if results[0].keypoints.conf is not None else []
+		# else:
+		# 	dequeInfo['keypoints'] = [] 
+		#	dequeInfo['keypoints_conf'] = []
+
+		if (results[0].masks is not None):
+			for i in range(0, len(results[0].masks.data)):
+				dequeInfo['masks_data'].append(
+					cv2.resize(np.array(results[0].masks.data[i]), np_res, interpolation=cv2.INTER_LINEAR).round())  
+				dequeInfo['masks_xy'].append((results[0].masks.xyn[i]*np_res).astype(int)) 
+		# else:
+		#	dequeInfo['masks_data'] = [] 
+		#	dequeInfo['masks_xy'] = []
+						
+		return(dequeInfo)
+		
+	def _thread_Ultralytics(self):
+
+		'''
+		THIS IS A THREAD
+		rate is in [Hz] (frames/second)
+		self.camObject is the parent (from Camera).
+		We are in self.camObject.ultralytics[idName] 
+		'''
+		self.isThreadActive = True
+
+		while self.camObject.camOn:
+			try:
+				timeNow = time.time()
+							
+				# FIXME -- It would be nice to cut out the `if` statements...
+				
+				# Throttle things if we're going faster than capture speed
+				if (self.fps.actual >= self.camObject.fps['capture'].actual):
+					with self.camObject.condition:
+						self.camObject.condition.wait(1)   # added a timeout, just to keep from getting permanently stuck here
+
+
+				# Predict or Track?
+				if (self.idName == 'track'):
+					results = self.model.track(self.camObject.getFrameCopy(), stream=False, persist=True, conf=self.conf_threshold, verbose=self.verbose) 
+				else:
+					results = self.model.predict(self.camObject.getFrameCopy(), stream=False, conf=self.conf_threshold, verbose=self.verbose) 
+					# FIXME -- Can also specify a subset of classes/objects to detect.
+					# See https://docs.ultralytics.com/modes/predict/#inference-arguments
+								
+				# Process the results
+				dequeInfo = self._processResults(results)
+				
+				# Add detection info to deque:
+				self.deque.append(dequeInfo)
+								
+				# Do some post-processing:
+				self.postFunction(self.idName)
+				
+				self.camObject.calcFramerate(self.fps, 'ultralytics') 
+
+				self.camObject.reachback_pubCamStatus()
+			except Exception as e:
+				self.stop()
+				self.camObject.logger.log(f'Error in ultralytics {self.idName} thread: {e}', severity=ub_utils.SEVERITY_ERROR)				
+				break
+	
+			if (not self.isThreadActive):
+				self.stop()
+				self.camObject.logger.log(f'Stopping ultralytics {self.idName} thread.', severity=ub_utils.SEVERITY_INFO)
+				break
+	
+			# Simplified version of rospy.sleep
+			delta = max(0, timeNow + self.threadSleep - time.time())
+			if (delta > 0):
+				time.sleep(delta)
+				
+		# If while loop stops, shut down ultralytics:
+		self.stop()
+
+	def edit(self, *args, **kwargs):
+		self.camObject.logger.log('Sorry, ultralytics editing is not yet supported.', severity=ub_utils.SEVERITY_WARNING)
+
+	def start(self):
+		try:			
+			self.camObject.logger.log(f'Starting Ultralytics {self.idName} thread at {self.fps_target} fps', severity=ub_utils.SEVERITY_INFO)
+			
+			ultraThread = threading.Thread(target=self._thread_Ultralytics, args=())
+			ultraThread.daemon = True    # Allows your main script to exit, shutting down this thread, too.
+			ultraThread.start()
+
+			# Add to decorations deque
+			# FIXME -- Maybe we don't necessarily want to decorate?
+			self.decorationID = int(time.time()*1000)
+			self.camObject.dec['dequeAdd'].append({'function': self._decorate, 'idName': self.idName, 'decorationID': self.decorationID})
+
+		except Exception as e:
+			self.camObject.logger.log(f'Error in ultralytics start: {e}.', severity=ub_utils.SEVERITY_ERROR)
+
+
+	def stop(self):
+		try:
+			if (self.idName in self.camObject.ultralytics):
+				'''
+				# Remove idName from self.camObject.decorations['ultralytics']
+				if (self.idName in self.camObject.decorations['ultralytics']):
+					self.camObject.decorations['ultralytics'].remove(self.idName)
+				'''	
+				self.camObject.dec['dequeRemove'].append(self.decorationID)	
+
+				self.camObject.logger.log(f'Stopping Ultralytics {self.idName} thread.', severity=ub_utils.SEVERITY_INFO)
+				
+				self.isThreadActive = False
+				self.deque.clear()					
+			else:
+				self.camObject.logger.log(f'In stop, ultralytics {self.idName} dictionary is not defined', severity=ub_utils.SEVERITY_ERROR)
+		except Exception as e:
+			self.camObject.logger.log(f'Error in ultralytics stop: {e}.', severity=ub_utils.SEVERITY_ERROR)
+
 				
 class _make_fps_dict():
 	def __init__(self, startTime=datetime.datetime.now(), recheckInterval=5):
@@ -1247,7 +1471,7 @@ class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
 		
 class Camera():
 	# was `cam_capture_initialize`
-	def __init__(self, paramDict, logger=None, sslPath=None, pubCamStatusFunction=None, initROSnode=False):
+	def __init__(self, paramDict, logger=None, sslPath=None, pubCamStatusFunction=None, initROSnode=False, showFPS=True):
 		# Here's where we put the stuff that was in __init__ from each specific camera class...
 		
 		if (logger):
@@ -1289,6 +1513,7 @@ class Camera():
 		self.fps = {'capture': _make_fps_dict(recheckInterval=3), 
 					'stream':  _make_fps_dict(recheckInterval=3),
 					'publish': _make_fps_dict(recheckInterval=5)}
+		self.showFPS = showFPS
 				
 		self.condition = Condition()		# FIXME -- Can we call this self.frameReadyCondition?  NOTE:  This is referenced by camAutoTakePic...If you change names check there, too.
 	
@@ -1309,12 +1534,13 @@ class Camera():
 				
 		self.camTopicSubscriber = None    # Used by CameraROS (compressed image callback)
 
-		self.aruco      = {}
-		self.roi        = {}
-		self.barcode    = {}
-		self.calibrate  = {}
-		self.timelapse  = {}
-		self.facedetect = {}
+		self.aruco       = {}
+		self.roi         = {}
+		self.barcode     = {}
+		self.calibrate   = {}
+		self.timelapse   = {}
+		self.facedetect  = {}
+		self.ultralytics = {}
 		# self.decorations = {'aruco': [], 'roi': [], 'barcode': [], 'calibrate': []}
 		self.dec = {'active': [], 'dequeAdd': deque(), 'dequeRemove': deque(), 'dequeEdit': deque()}
  
@@ -1498,6 +1724,30 @@ class Camera():
 		except Exception as e:
 			self.logger.log(f'Error in addBarcode: {e}.', severity=ub_utils.SEVERITY_ERROR)
 		
+
+	def addUltralytics(self, idName=None, res_rows=None, res_cols=None, fps_target=None, postFunction=None, color=(0,255,255), conf_threshold=0.25, model_name=None, verbose=False):
+		# Start an Ultralytics task ("detect", "segment", "classify", "pose", "obb", "track")
+		try:
+			if (idName not in ["detect", "segment", "classify", "pose", "obb", "track"]):
+				# idName in this context is the same as Ultralytics' "task" description
+				self.logger.log('Error in addUltralytics: idName not in ["detect", "segment", "classify", "pose", "obb", "track"]', severity=ub_utils.SEVERITY_ERROR)
+				return
+
+			if (model_name is None):
+				# model_name should be something like "YOLO11n.pt" or "YOLO11n-cls.pt"
+				self.logger.log('Error in addUltralytics: model_name must be specified', severity=ub_utils.SEVERITY_ERROR)
+				return
+				
+			res_rows   = self.defaultFromNone(res_rows,   self.res_rows,   int)
+			res_cols   = self.defaultFromNone(res_cols,   self.res_cols,   int)
+			fps_target = self.defaultFromNone(fps_target, self.fps_target, int)
+			
+			self.ultralytics[idName] = _Ultralytics(self, idName, res_rows, res_cols, int(fps_target), postFunction, color, conf_threshold, model_name, verbose)
+			self.ultralytics[idName].start() 
+			
+		except Exception as e:
+			self.logger.log(f'Error in addFaceDetect: {e}.', severity=ub_utils.SEVERITY_ERROR)
+				
 
 	# FIXME -- Remove this function
 	def setCamFunction(self, functionType, framerate):
@@ -1760,11 +2010,12 @@ class Camera():
 		except Exception as e:
 			self.logger.log(f'Error in decorateFrame: {e}.', severity=ub_utils.SEVERITY_ERROR)
 
-		
-		cv2.putText(img, f"{str(self.fps['stream'].actual)}/{str(self.fps['capture'].actual)} fps",
-					(int(20), int(20)),                             # left, down
-					cv2.FONT_HERSHEY_SIMPLEX,
-					0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+		if (self.showFPS):
+			cv2.putText(img, f"{str(self.fps['stream'].actual)}/{str(self.fps['capture'].actual)} fps",
+						(int(20), int(20)),                             # left, down
+						cv2.FONT_HERSHEY_SIMPLEX,
+						0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
 		
 		# FIXME -- Add some other text:
@@ -2000,7 +2251,8 @@ class CameraPi(Camera):
 	
 	FIXME FIXME FIXME -- Does picamera actually use `device` anywhere???
 	'''
-	def __init__(self, paramDict={'res_rows':480, 'res_cols':640, 'fps_target':30, 'outputPort': 8000}, device='/dev/video0', apiPref=cv2.CAP_V4L2, logger=None, sslPath=None, pubCamStatusFunction=None, imgTopic=None, compImgTopic=None, initROSnode=False):
+	def __init__(self, paramDict={'res_rows':480, 'res_cols':640, 'fps_target':30, 'outputPort': 8000}, device='/dev/video0', apiPref=cv2.CAP_V4L2, logger=None, sslPath=None, pubCamStatusFunction=None, imgTopic=None, compImgTopic=None, 
+		initROSnode=False, showFPS=True):
 		try:
 			import picamera
 			self.picamera = picamera	# We have some namespace issues, since importing module inside class.
@@ -2010,7 +2262,7 @@ class CameraPi(Camera):
 			# self.logger.log(f'Failed to init CameraPi: {e}', severity=ub_utils.SEVERITY_ERROR)
 			print(f'Failed to init CameraPi: {e}')
 			
-		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, initROSnode)
+		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, initROSnode, showFPS)
 	
 		self.cap = None	
 	
@@ -2197,8 +2449,8 @@ class CameraROS(Camera):
 	This includes Gazebo sim and Clover (real)
 	'''
 	
-	def __init__(self, assetID=None, paramDict={}, logger=None, sslPath=None, pubCamStatusFunction=None):
-		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction)
+	def __init__(self, assetID=None, paramDict={}, logger=None, sslPath=None, pubCamStatusFunction=None, showFPS=True):
+		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, showFPS)
 
 		# See vehicles.json, which includes a topic for Clover and Sim cameras.
 		# In make_asset class we replace {} with the assetID (where applicable)
@@ -2358,9 +2610,10 @@ class CameraUSB(Camera):
 	'''
 	
 	def __init__(self, paramDict={'res_rows':480, 'res_cols':640, 'fps_target':30, 'outputPort': 8000}, device='/dev/video0', 
-		apiPref=cv2.CAP_V4L2, fourcc=None, logger=None, sslPath=None, pubCamStatusFunction=None, imgTopic=None, compImgTopic=None, initROSnode=False):
+		apiPref=cv2.CAP_V4L2, fourcc=None, logger=None, sslPath=None, pubCamStatusFunction=None, imgTopic=None, compImgTopic=None, 
+		initROSnode=False, showFPS=True):
 		
-		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, initROSnode)
+		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, initROSnode, showFPS)
 		
 		# FIXME -- Do some validation on inputs (in addition to what is in Camera)
 		# `device` must be present (but it could be a key in paramDict??)

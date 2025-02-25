@@ -511,6 +511,135 @@ def decorateOptFlow(img, shift):
 	
 	drawLine(img, (center_x, center_y), (int(center_x+5*shift[0]), int(center_y+5*shift[1])))
 	
+def decorateUltralytics(img, w, h, idName, results, drawBox):
+	try:
+		# FIXME -- assign color based on class
+		color=(0, 255, 55)
+		
+		if (drawBox):
+			for i in range(0, len(results['class'])):
+				# 'class': [], 'class_conf': [],
+				# print(results['xyxy'])
+				if (results['xyxy']):
+					pt1 = (int(results['xyxy'][i][0]), int(results['xyxy'][i][1]))
+					pt2 = (int(results['xyxy'][i][2]), int(results['xyxy'][i][3]))
+
+					cv2.rectangle(img, pt1, pt2, color, 2, cv2.LINE_AA)
+					
+					txt = f"{results['class'][i]} {results['class_conf'][i]:.2f}"
+					if (results['id']):
+						txt = f"ID:{results['id'][i]} {txt}" 	
+					txtsize = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 1)[0]  # scale=0.7, thickness=1
+					shp = img.shape  # [rows, cols, depth]
+					if (pt1[0] > shp[1]/2):
+						# right justify across bounding box
+						txt_x = pt2[0] - txtsize[0] - 5 # 5px buffer
+						label_pt1 = (min(pt1[0], pt2[0] - txtsize[0] - 5), max(0, pt1[1]-20))
+						label_pt2 = (pt2[0], label_pt1[1] + 20)
+					else:
+						# left justify
+						txt_x = pt1[0] + 5
+						label_pt1 = (pt1[0], max(0, pt1[1]-20))
+						label_pt2 = (max(pt2[0], pt1[0]+txtsize[0]+5), label_pt1[1] + 20)
+
+					cv2.rectangle(img, label_pt1, label_pt2, color, -1)
+
+					cv2.putText(img, txt,
+						(txt_x, label_pt2[1]-3),
+						cv2.FONT_HERSHEY_SIMPLEX,
+						0.7, (0, 0, 0), 1, cv2.LINE_AA)		
+				elif (results['xyxyxyxy']):
+					cv2.polylines(img, [np.array(results['xyxyxyxy'][i]).reshape((4,2))], isClosed=True, color=(0, 255, 0), thickness=1)
+		
+		
+		# min_conf = 0.75
+		radius = 5 # px
+		color = (100, 100, 100)
+		thickness = 1
+		skeleton = {'face':  [5, 3, 1, 0, 2, 4, 6], # [[0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6]], 
+		            'arms':  [9, 7, 5, 6, 8, 10], 
+					'leg_left':  [11, 13, 15],
+					'leg_right': [12, 14, 16],
+					'torso': [5, 11, 12, 6]}
+		sk_poly_colors = {'face': (50, 168, 82), 
+					 'arms': (0, 154, 196), 
+					 'leg_left': (250, 187, 0), 
+					 'leg_right': (250, 187, 0), 
+					 'torso': (240, 129, 231)}
+		sk_points = {'face': [0, 1, 2, 3, 4], 
+					 'arms': [5, 6, 7, 8, 9, 10],
+					 'legs': [11, 12, 13, 14, 15, 16]}
+		sk_points_colors = {'face': sk_poly_colors['face'], 
+							'arms': sk_poly_colors['arms'], 
+							'legs': sk_poly_colors['leg_left']}
+					 
+		
+		
+		# FIXME -- Need to scale the keypoints to image size?  Done?
+		for body in range(0, len(results['keypoints'])):
+			#print('sk')
+			for part in skeleton:
+				keep = []
+				tmp = []
+				for index in skeleton[part]:
+					#print(f'{body=}, {index=}')
+					#print(f"{results['keypoints'][body]}")
+					if ((results['keypoints'][body][index] > [0, 0]).all()):
+						tmp.append(results['keypoints'][body][index])
+					else:
+						if (len(tmp) > 1):
+							keep.extend(tmp)
+						tmp = []
+						
+				if (len(tmp) > 1):
+					keep.extend(tmp)
+				if (len(keep) > 1):
+					cv2.polylines(img, [np.int32(keep)], isClosed=False, color=sk_poly_colors[part], thickness=2)
+												
+			#print('kp')
+			for part in sk_points:
+				for i in sk_points[part]:
+					# print(results['keypoints'][body][i], results['keypoints'][body][i] > [0, 0])
+					if ((results['keypoints'][body][i] > [0, 0]).all()):
+						cv2.circle(img, results['keypoints'][body][i], radius, sk_points_colors[part], -1)
+		
+		# Segmentation
+		# mask outline
+		'''
+		for i in range(0, len(results['masks_xy'])):
+			cv2.polylines(img, [np.int32(results['masks_xy'][i])], isClosed=True, color=(100, 100, 100), thickness=2)
+		'''
+		
+		# channel = 1
+		# value = 40
+		clr = np.array([100, 100, 100])
+
+		# t = results[0].orig_img
+		# t[:,:,channel] = t[:,:,channel]  + mask_stretch*value # mask_stretch*value # t[:,:,channel]#  + mask_stretch*value
+		# t[:,:,:] = t[:,:,:]  + np.expand_dims(mask_stretch, axis=-1)*clr # mask_stretch*value # t[:,:,channel]#  + mask_stretch*value
+		# success = cv2.imwrite('test00a.jpg', t)	
+		try:	
+			for i in range(0, len(results['masks_data'])):
+				# print(results['masks_data'][i].shape)
+				# print(type(results['masks_data'][i]))
+				# print(results['masks_data'][i].dtype)
+				# print(img.shape)
+				# print(max(results['masks_data'][i]))  failsThe truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+				img[:,:,:] = img[:,:,:] + np.expand_dims(results['masks_data'][i], axis=-1)*clr
+		except Exception as e:
+			print(f'ERRROR: {e}')
+			
+			
+		'''
+		if (addText):
+			cv2.putText(img, str(idName),
+				(15, 65),
+				cv2.FONT_HERSHEY_SIMPLEX,
+				0.5, (200, 20, 10), 1, cv2.LINE_AA)		
+		'''
+	except Exception as e:
+		print(f'Error in decorateUltralytics: {e}')
+		
 def degCtoF(degC):
 	# Convert degrees Celsius to Fahrenheit
 	return (degC*9/5) + 32
