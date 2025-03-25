@@ -699,7 +699,7 @@ class _Barcode():
 		
 
 class _FaceDetect():
-	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, color, conf_threshold, dnn, device):
+	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, color, conf_threshold, dnn, device, modelPath):
 		try:
 			# https://learnopencv.com/face-detection-opencv-dlib-and-deep-learning-c-python/
 			# https://pyimagesearch.com/2018/02/26/face-detection-with-opencv-and-deep-learning/
@@ -722,6 +722,12 @@ class _FaceDetect():
 				self.postFunction = ub_utils._passFunction
 			else:
 				self.postFunction = postFunction
+
+			if (modelPath):
+				self.modelPath = modelPath
+			else:
+				self.modelPath = f'{os.getcwd()}/cv2_dnn_models'  # Place where deploy.prototxt, res10_300x300_....caffemodel are saved
+
 
 			self.color = color
 			
@@ -792,13 +798,13 @@ class _FaceDetect():
 		# 2. 8 bit Quantized version using TensorFlow ( 2.7 MB )
 
 		if (self.dnn == "caffe"):
-			modelFile  = "cv2_dnn_models/res10_300x300_ssd_iter_140000_fp16.caffemodel"
-			configFile = "cv2_dnn_models/deploy.prototxt"
+			modelFile  = f"{self.modelPath}/res10_300x300_ssd_iter_140000_fp16.caffemodel"
+			configFile = f"{self.modelPath}/deploy.prototxt"
 			net = cv2.dnn.readNetFromCaffe(configFile, modelFile)
 			blobFunction = self._blobCaffe
 		else:
-			modelFile  = "cv2_dnn_models/opencv_face_detector_uint8.pb"
-			configFile = "cv2_dnn_models/opencv_face_detector.pbtxt"
+			modelFile  = f"{self.modelPath}/opencv_face_detector_uint8.pb"
+			configFile = f"{self.modelPath}/opencv_face_detector.pbtxt"
 			net = cv2.dnn.readNetFromTensorflow(modelFile, configFile)
 			blobFunction = self._blobTF
 
@@ -1179,7 +1185,7 @@ class _ROI():
 
 
 class _Ultralytics():
-	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, color, conf_threshold, model_name, verbose):
+	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, color, conf_threshold, model_name, verbose, drawBox, drawLabel, maskOutline):
 		try:
 			from ultralytics import YOLO
 		except Exception as e:
@@ -1190,15 +1196,22 @@ class _Ultralytics():
 			self.camObject = camObject  # This is the parent!
 								
 			self.idName   = idName          # "detect", "classify", "pose", "obb", "track", or "segment"
-			if (idName == 'pose'):
-				self.drawBox = False
-			else:
-				self.drawBox = True
 			self.model_name = model_name    # "yolo11n.pt", "yolo11n-cls.pt", etc
 			self.model = YOLO(model_name)
 			self.verbose = verbose
-			
-			
+			if (drawBox is None): 
+				if (idName == 'pose'):
+					self.drawBox = False
+				else:
+					self.drawBox = True
+			else:
+				self.drawBox = drawBox	
+			if (drawLabel is None):
+				self.drawLabel = self.drawBox
+			else:
+				self.drawLabel = drawLabel	
+			self.maskOutline = maskOutline
+						
 			self.decorationID = None   # FIXU -- What will this be?
 			
 			self.res_rows = res_rows
@@ -1230,7 +1243,7 @@ class _Ultralytics():
 	def _decorate(self, img, **kwargs):
 		# print('idName:', idName, 'ultralytics[idName]:', self.ultralytics[idName].deque[0])
 		# print(self.ultralytics[idName].deque[0])
-		ub_utils.decorateUltralytics(img, self.res_cols, self.res_rows, self.idName, self.deque[0], self.drawBox)
+		ub_utils.decorateUltralytics(img, self.res_cols, self.res_rows, self.idName, self.deque[0], self.drawBox, self.drawLabel, self.maskOutline)
 		# FIXU -- Needs to match deque as defined in __init__
 
 	def _initDeque(self):
@@ -1260,7 +1273,7 @@ class _Ultralytics():
 			dequeInfo['xywhr'] = bx.xywhr.tolist()    # This is the center point of obb, in original resolution
 			# dequeInfo['xywhrn'] = bx.xywhrn.tolist()  # There's no such thing as `xywhrn` 
 			# dequeInfo['xyxy'] = []
-			dequeInfo['xyxyxyxy'] = (bx.xyxyxyxy*(np_res)).int().tolist()
+			dequeInfo['xyxyxyxy'] = (bx.xyxyxyxyn*(np_res)).int().tolist()
 			# dequeInfo['xyxyxyxyn'] = bx.xyxyxyxyn.tolist()
 
 		else:
@@ -1339,7 +1352,7 @@ class _Ultralytics():
 				self.deque.append(dequeInfo)
 								
 				# Do some post-processing:
-				self.postFunction(self.idName)
+				self.postFunction(self.idName, results)
 				
 				self.camObject.calcFramerate(self.fps, 'ultralytics') 
 
@@ -1418,10 +1431,21 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
 		# BaseHTTPRequestHandler calls do_GET **inside** __init__ !!!
 		# So we have to call super().__init__ after setting attributes.
 		super().__init__(*args, **kwargs)
-				 
+			
+	def _error(self):
+		self.send_error(404)
+		self.end_headers()
+					 
 	def do_GET(self):
-		print(f'DEBUG: path? {self.path}')
-		if self.path == '/stream.mjpg':
+		# print(f'DEBUG: path? {self.path}')
+		print(f'DEBUG: clientIP: {self.client_address}')
+		if (len(self.camObject.ipAllowlist) > 0):
+			if (self.client_address[0] not in self.camObject.ipAllowlist):
+				self._error()
+		elif (len(self.camObject.ipBlocklist) > 0):
+			if (self.client_address[0] in self.camObject.ipBlocklist):
+				self._error()
+		elif (self.path == '/stream.mjpg'):
 			self.send_response(200)
 			self.send_header('Age', 0)
 			self.send_header('Cache-Control', 'no-cache, private')
@@ -1430,7 +1454,7 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
 			self.end_headers()
 			try:
 				self.camObject.streamIncr(+1)
-				print(f'DEBUG: keepStreaming? {self.camObject.keepStreaming}')
+				# print(f'DEBUG: keepStreaming? {self.camObject.keepStreaming}')
 				while self.camObject.keepStreaming:
 					with self.camObject.condition:
 						success = self.camObject.condition.wait(STREAM_MAX_WAIT_TIME_SEC)
@@ -1461,8 +1485,7 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
 				self.camObject.streamIncr(-1)
 				# logging.warning('Removed streaming client %s: %s',self.client_address, str(e))
 		else:
-			self.send_error(404)
-			self.end_headers()
+			self._error()
 
 class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
 	allow_reuse_address = True
@@ -1471,9 +1494,10 @@ class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
 		
 class Camera():
 	# was `cam_capture_initialize`
-	def __init__(self, paramDict, logger=None, sslPath=None, pubCamStatusFunction=None, initROSnode=False, showFPS=True):
+	def __init__(self, paramDict, logger=None, sslPath=None, pubCamStatusFunction=None, 
+				 initROSnode=False, showFPS=True, ipAllowlist=[], ipBlocklist=[]):
 		# Here's where we put the stuff that was in __init__ from each specific camera class...
-		
+
 		if (logger):
 			self.logger = logger
 		else:
@@ -1514,6 +1538,9 @@ class Camera():
 					'stream':  _make_fps_dict(recheckInterval=3),
 					'publish': _make_fps_dict(recheckInterval=5)}
 		self.showFPS = showFPS
+		
+		self.ipAllowlist = ipAllowlist
+		self.ipBlocklist = ipBlocklist
 				
 		self.condition = Condition()		# FIXME -- Can we call this self.frameReadyCondition?  NOTE:  This is referenced by camAutoTakePic...If you change names check there, too.
 	
@@ -1669,7 +1696,7 @@ class Camera():
 			self.logger.log(f'Error in addCalibrate: {e}.', severity=ub_utils.SEVERITY_ERROR)
 
 
-	def addFaceDetect(self, res_rows=None, res_cols=None, fps_target=5, postFunction=None, color=(0,255,255), conf_threshold=0.7, dnn='caffe', device='cpu'):
+	def addFaceDetect(self, res_rows=None, res_cols=None, fps_target=5, postFunction=None, color=(0,255,255), conf_threshold=0.7, dnn='caffe', device='cpu', modelPath=None):
 		# Start an openCV DNN-based face detector
 		try:
 			# self.facedetect is a dictionary.  We'll limit ourselves to just 1 face detection thread. though.
@@ -1678,7 +1705,7 @@ class Camera():
 			res_rows  = self.defaultFromNone(res_rows,  self.res_rows,   int)
 			res_cols  = self.defaultFromNone(res_cols,  self.res_cols,   int)
 			
-			self.facedetect[idName] = _FaceDetect(self, idName, res_rows, res_cols, int(fps_target), postFunction, color, conf_threshold, dnn, device)
+			self.facedetect[idName] = _FaceDetect(self, idName, res_rows, res_cols, int(fps_target), postFunction, color, conf_threshold, dnn, device, modelPath)
 			self.facedetect[idName].start() 
 			
 		except Exception as e:
@@ -1725,7 +1752,7 @@ class Camera():
 			self.logger.log(f'Error in addBarcode: {e}.', severity=ub_utils.SEVERITY_ERROR)
 		
 
-	def addUltralytics(self, idName=None, res_rows=None, res_cols=None, fps_target=None, postFunction=None, color=(0,255,255), conf_threshold=0.25, model_name=None, verbose=False):
+	def addUltralytics(self, idName=None, res_rows=None, res_cols=None, fps_target=None, postFunction=None, color=(0,255,255), conf_threshold=0.25, model_name=None, verbose=False, drawBox=None, drawLabel=None, maskOutline=False):
 		# Start an Ultralytics task ("detect", "segment", "classify", "pose", "obb", "track")
 		try:
 			if (idName not in ["detect", "segment", "classify", "pose", "obb", "track"]):
@@ -1742,7 +1769,7 @@ class Camera():
 			res_cols   = self.defaultFromNone(res_cols,   self.res_cols,   int)
 			fps_target = self.defaultFromNone(fps_target, self.fps_target, int)
 			
-			self.ultralytics[idName] = _Ultralytics(self, idName, res_rows, res_cols, int(fps_target), postFunction, color, conf_threshold, model_name, verbose)
+			self.ultralytics[idName] = _Ultralytics(self, idName, res_rows, res_cols, int(fps_target), postFunction, color, conf_threshold, model_name, verbose, drawBox, drawLabel, maskOutline)
 			self.ultralytics[idName].start() 
 			
 		except Exception as e:
@@ -2251,8 +2278,9 @@ class CameraPi(Camera):
 	
 	FIXME FIXME FIXME -- Does picamera actually use `device` anywhere???
 	'''
-	def __init__(self, paramDict={'res_rows':480, 'res_cols':640, 'fps_target':30, 'outputPort': 8000}, device='/dev/video0', apiPref=cv2.CAP_V4L2, logger=None, sslPath=None, pubCamStatusFunction=None, imgTopic=None, compImgTopic=None, 
-		initROSnode=False, showFPS=True):
+	def __init__(self, paramDict={'res_rows':480, 'res_cols':640, 'fps_target':30, 'outputPort': 8000}, 
+				device='/dev/video0', apiPref=cv2.CAP_V4L2, logger=None, sslPath=None, pubCamStatusFunction=None, 
+				imgTopic=None, compImgTopic=None, initROSnode=False, showFPS=True, ipAllowlist=[], ipBlocklist=[]):
 		try:
 			import picamera
 			self.picamera = picamera	# We have some namespace issues, since importing module inside class.
@@ -2262,7 +2290,7 @@ class CameraPi(Camera):
 			# self.logger.log(f'Failed to init CameraPi: {e}', severity=ub_utils.SEVERITY_ERROR)
 			print(f'Failed to init CameraPi: {e}')
 			
-		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, initROSnode, showFPS)
+		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, initROSnode, showFPS, ipAllowlist, ipBlocklist)
 	
 		self.cap = None	
 	
@@ -2449,8 +2477,9 @@ class CameraROS(Camera):
 	This includes Gazebo sim and Clover (real)
 	'''
 	
-	def __init__(self, assetID=None, paramDict={}, logger=None, sslPath=None, pubCamStatusFunction=None, showFPS=True):
-		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, showFPS)
+	def __init__(self, assetID=None, paramDict={}, logger=None, sslPath=None, pubCamStatusFunction=None, showFPS=True, 
+				 ipAllowlist=[], ipBlocklist=[]):
+		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, showFPS, ipAllowlist, ipBlocklist)
 
 		# See vehicles.json, which includes a topic for Clover and Sim cameras.
 		# In make_asset class we replace {} with the assetID (where applicable)
@@ -2611,9 +2640,9 @@ class CameraUSB(Camera):
 	
 	def __init__(self, paramDict={'res_rows':480, 'res_cols':640, 'fps_target':30, 'outputPort': 8000}, device='/dev/video0', 
 		apiPref=cv2.CAP_V4L2, fourcc=None, logger=None, sslPath=None, pubCamStatusFunction=None, imgTopic=None, compImgTopic=None, 
-		initROSnode=False, showFPS=True):
+		initROSnode=False, showFPS=True, ipAllowlist=[], ipBlocklist=[]):
 		
-		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, initROSnode, showFPS)
+		super().__init__(paramDict, logger, sslPath, pubCamStatusFunction, initROSnode, showFPS, ipAllowlist, ipBlocklist)
 		
 		# FIXME -- Do some validation on inputs (in addition to what is in Camera)
 		# `device` must be present (but it could be a key in paramDict??)

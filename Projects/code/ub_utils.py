@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 import os
 import math
-
+import socket, errno, time  # For checkPort() function
 
 # https://mavlink.io/en/messages/common.html#MAV_SEVERITY
 SEVERITY_EMERGENCY = 0  # System is unusable. This is a "panic" condition.
@@ -511,12 +511,12 @@ def decorateOptFlow(img, shift):
 	
 	drawLine(img, (center_x, center_y), (int(center_x+5*shift[0]), int(center_y+5*shift[1])))
 	
-def decorateUltralytics(img, w, h, idName, results, drawBox):
+def decorateUltralytics(img, w, h, idName, results, drawBox, drawLabel, maskOutline):
 	try:
 		# FIXME -- assign color based on class
 		color=(0, 255, 55)
 		
-		if (drawBox):
+		if (drawBox or drawLabel):
 			for i in range(0, len(results['class'])):
 				# 'class': [], 'class_conf': [],
 				# print(results['xyxy'])
@@ -524,31 +524,34 @@ def decorateUltralytics(img, w, h, idName, results, drawBox):
 					pt1 = (int(results['xyxy'][i][0]), int(results['xyxy'][i][1]))
 					pt2 = (int(results['xyxy'][i][2]), int(results['xyxy'][i][3]))
 
-					cv2.rectangle(img, pt1, pt2, color, 2, cv2.LINE_AA)
+					if (drawBox):
+						cv2.rectangle(img, pt1, pt2, color, 2, cv2.LINE_AA)
 					
-					txt = f"{results['class'][i]} {results['class_conf'][i]:.2f}"
-					if (results['id']):
-						txt = f"ID:{results['id'][i]} {txt}" 	
-					txtsize = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 1)[0]  # scale=0.7, thickness=1
-					shp = img.shape  # [rows, cols, depth]
-					if (pt1[0] > shp[1]/2):
-						# right justify across bounding box
-						txt_x = pt2[0] - txtsize[0] - 5 # 5px buffer
-						label_pt1 = (min(pt1[0], pt2[0] - txtsize[0] - 5), max(0, pt1[1]-20))
-						label_pt2 = (pt2[0], label_pt1[1] + 20)
-					else:
-						# left justify
-						txt_x = pt1[0] + 5
-						label_pt1 = (pt1[0], max(0, pt1[1]-20))
-						label_pt2 = (max(pt2[0], pt1[0]+txtsize[0]+5), label_pt1[1] + 20)
+					if (drawLabel):
+						txt = f"{results['class'][i]} {results['class_conf'][i]:.2f}"
+						if (results['id']):
+							txt = f"ID:{int(results['id'][i])} {txt}" 	
+						txtsize = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 1)[0]  # scale=0.7, thickness=1
+						shp = img.shape  # [rows, cols, depth]
+						if (pt1[0] > shp[1]/2):
+							# right justify across bounding box
+							txt_x = pt2[0] - txtsize[0] - 5 # 5px buffer
+							label_pt1 = (min(pt1[0], pt2[0] - txtsize[0] - 5), max(0, pt1[1]-20))
+							label_pt2 = (pt2[0], label_pt1[1] + 20)
+						else:
+							# left justify
+							txt_x = pt1[0] + 5
+							label_pt1 = (pt1[0], max(0, pt1[1]-20))
+							label_pt2 = (max(pt2[0], pt1[0]+txtsize[0]+5), label_pt1[1] + 20)
 
-					cv2.rectangle(img, label_pt1, label_pt2, color, -1)
+						cv2.rectangle(img, label_pt1, label_pt2, color, -1)
 
-					cv2.putText(img, txt,
-						(txt_x, label_pt2[1]-3),
-						cv2.FONT_HERSHEY_SIMPLEX,
-						0.7, (0, 0, 0), 1, cv2.LINE_AA)		
+						cv2.putText(img, txt,
+							(txt_x, label_pt2[1]-3),
+							cv2.FONT_HERSHEY_SIMPLEX,
+							0.7, (0, 0, 0), 1, cv2.LINE_AA)		
 				elif (results['xyxyxyxy']):
+					# print(np.array(results['xyxyxyxy'][i]).reshape((4,2)))
 					cv2.polylines(img, [np.array(results['xyxyxyxy'][i]).reshape((4,2))], isClosed=True, color=(0, 255, 0), thickness=1)
 		
 		
@@ -605,10 +608,9 @@ def decorateUltralytics(img, w, h, idName, results, drawBox):
 		
 		# Segmentation
 		# mask outline
-		'''
-		for i in range(0, len(results['masks_xy'])):
-			cv2.polylines(img, [np.int32(results['masks_xy'][i])], isClosed=True, color=(100, 100, 100), thickness=2)
-		'''
+		if (maskOutline):
+			for i in range(0, len(results['masks_xy'])):
+				cv2.polylines(img, [np.int32(results['masks_xy'][i])], isClosed=True, color=(100, 100, 100), thickness=2)
 		
 		# channel = 1
 		# value = 40
@@ -878,6 +880,33 @@ def arucoFindPoseGlobal():
 	
 	print('FIXME -- Do we already have this function somewhere?')
 	
+
+def checkPort(port):
+	# Check if a given local port is available (returns True) or in use (returns False)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(('localhost', port))
+        s.close()
+        return True
+    except socket.error as e:
+        if e.errno == errno.EADDRINUSE:
+            print(f"Port {port} is already in use.")
+        else:
+            print(e)
+        s.close()
+        return False
+        
+def findOpenPort(port, options=range(8000,8011)):
+	# port is our preferred port
+	# options is a list of acceptable alternative ports
+	if (checkPort(port)):
+		return port
+	else:
+		for p in options:
+			if (checkPort(p)):
+				return p
+				
+	return None	
 		
 def pics2video(sourcePath=None, filename=None, fps=30):
 	try:
@@ -910,3 +939,10 @@ def pics2video(sourcePath=None, filename=None, fps=30):
 		# os.system("rm {}/{}".format(dirpath, tmpFilename))
 	except Exception as e:
 		print(f'Error in pics2video: {e}')
+
+
+def inches2meters(inches):
+    return inches * 0.0254
+
+def meters2inches(meters):
+    return meters * 39.3701

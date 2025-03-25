@@ -78,7 +78,7 @@ class Main:
 		
 		# FIXME -- We need to provide IP address as input argument (rather than using localhost)
 		sio.connect('https://localhost:8080', transports=['websocket'])
-		print('my sid is', sio.sid)
+		print('my sid is', sio.get_sid())
 		
 		statusRate = 1/STATUS_RATE # convert Hz to seconds
 		while not monitor.is_shutdown:
