@@ -674,8 +674,8 @@ def drawCircle(img, center, radius, thickness=3, color=(150, 25, 25)):
 	'''
 	cv2.circle(img, center, radius, color, thickness, cv2.LINE_AA, 0)
 	
-def drawLine(img, p1, p2, thickness=3):
-	cv2.line(img, p1, p2, (255,0,0), 3, cv2.LINE_AA)
+def drawLine(img, p1, p2, thickness=3, color=(255,0,0)):
+	cv2.line(img, p1, p2, color, thickness, cv2.LINE_AA)
 
 
 def res2rowscols(res):

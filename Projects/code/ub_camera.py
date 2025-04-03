@@ -526,7 +526,7 @@ class _Calibrate():
 		
 		
 class _Barcode():
-	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, color):
+	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, postFunctionArgs, color):
 		try:
 			# https://pypi.org/project/pyzbar/
 			from pyzbar import pyzbar
@@ -544,6 +544,8 @@ class _Barcode():
 			self.fps_target  = fps_target		# Hz
 			self.threadSleep = 1/fps_target		# seconds
 				
+			self.postFunctionArgs = postFunctionArgs
+			self.postFunctionArgs['idName'] = idName	
 			if (postFunction is None):
 				self.postFunction = ub_utils._passFunction
 			else:
@@ -627,7 +629,7 @@ class _Barcode():
 				self.deque.append({'data': data, 'codeTypes': codeTypes, 'qualities': qualities, 'corners': corners, 'color': self.color})
 								
 				# Do some post-processing:
-				self.postFunction()
+				self.postFunction(self.postFunctionArgs)
 				
 				self.camObject.calcFramerate(self.fps, 'barcode')
 
@@ -699,7 +701,7 @@ class _Barcode():
 		
 
 class _FaceDetect():
-	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, color, conf_threshold, dnn, device, modelPath):
+	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, postFunctionArgs, color, conf_threshold, dnn, device, modelPath):
 		try:
 			# https://learnopencv.com/face-detection-opencv-dlib-and-deep-learning-c-python/
 			# https://pyimagesearch.com/2018/02/26/face-detection-with-opencv-and-deep-learning/
@@ -718,6 +720,8 @@ class _FaceDetect():
 			self.fps_target  = fps_target		# Hz
 			self.threadSleep = 1/fps_target		# seconds
 				
+			self.postFunctionArgs = postFunctionArgs
+			self.postFunctionArgs['idName'] = idName
 			if (postFunction is None):
 				self.postFunction = ub_utils._passFunction
 			else:
@@ -851,7 +855,7 @@ class _FaceDetect():
 				self.deque.append({'confidence': confidence, 'corners': corners, 'color': self.color})
 								
 				# Do some post-processing:
-				self.postFunction()
+				self.postFunction(self.postFunctionArgs)
 				
 				self.camObject.calcFramerate(self.fps, 'facedetect')
 
@@ -1185,7 +1189,7 @@ class _ROI():
 
 
 class _Ultralytics():
-	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, color, conf_threshold, model_name, verbose, drawBox, drawLabel, maskOutline):
+	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, postFunctionArgs, color, conf_threshold, model_name, verbose, drawBox, drawLabel, maskOutline):
 		try:
 			from ultralytics import YOLO
 		except Exception as e:
@@ -1221,6 +1225,8 @@ class _Ultralytics():
 			self.fps_target  = fps_target		# Hz
 			self.threadSleep = 1/fps_target		# seconds
 				
+			self.postFunctionArgs = postFunctionArgs
+			self.postFunctionArgs['idName'] = idName
 			if (postFunction is None):
 				self.postFunction = ub_utils._passFunction
 			else:
@@ -1352,7 +1358,8 @@ class _Ultralytics():
 				self.deque.append(dequeInfo)
 								
 				# Do some post-processing:
-				self.postFunction(self.idName, results)
+				self.postFunctionArgs['results'] = results
+				self.postFunction(self.postFunctionArgs)
 				
 				self.camObject.calcFramerate(self.fps, 'ultralytics') 
 
@@ -1664,7 +1671,7 @@ class Camera():
 		except Exception as e:
 			self.logger.log(f'Error in addAruco: {e}.', severity=ub_utils.SEVERITY_ERROR)
 
-	def addBarcode(self, res_rows=None, res_cols=None, fps_target=5, postFunction=None, color=(0,0,255)):
+	def addBarcode(self, res_rows=None, res_cols=None, fps_target=5, postFunction=None, postFunctionArgs={}, color=(0,0,255)):
 		# Start pyzbar to track barcodes/QRcodes
 		try:
 			# self.barcode is a dictionary.  We'll limit ourselves to just 1 barcode thread. though.
@@ -1673,7 +1680,7 @@ class Camera():
 			res_rows  = self.defaultFromNone(res_rows,  self.res_rows,   int)
 			res_cols  = self.defaultFromNone(res_cols,  self.res_cols,   int)
 			
-			self.barcode[idName] = _Barcode(self, idName, res_rows, res_cols, int(fps_target), postFunction, color)
+			self.barcode[idName] = _Barcode(self, idName, res_rows, res_cols, int(fps_target), postFunction, postFunctionArgs, color)
 			self.barcode[idName].start() 
 
 		except Exception as e:
@@ -1696,7 +1703,7 @@ class Camera():
 			self.logger.log(f'Error in addCalibrate: {e}.', severity=ub_utils.SEVERITY_ERROR)
 
 
-	def addFaceDetect(self, res_rows=None, res_cols=None, fps_target=5, postFunction=None, color=(0,255,255), conf_threshold=0.7, dnn='caffe', device='cpu', modelPath=None):
+	def addFaceDetect(self, res_rows=None, res_cols=None, fps_target=5, postFunction=None, postFunctionArgs={}, color=(0,255,255), conf_threshold=0.7, dnn='caffe', device='cpu', modelPath=None):
 		# Start an openCV DNN-based face detector
 		try:
 			# self.facedetect is a dictionary.  We'll limit ourselves to just 1 face detection thread. though.
@@ -1705,7 +1712,7 @@ class Camera():
 			res_rows  = self.defaultFromNone(res_rows,  self.res_rows,   int)
 			res_cols  = self.defaultFromNone(res_cols,  self.res_cols,   int)
 			
-			self.facedetect[idName] = _FaceDetect(self, idName, res_rows, res_cols, int(fps_target), postFunction, color, conf_threshold, dnn, device, modelPath)
+			self.facedetect[idName] = _FaceDetect(self, idName, res_rows, res_cols, int(fps_target), postFunction, postFunctionArgs, color, conf_threshold, dnn, device, modelPath)
 			self.facedetect[idName].start() 
 			
 		except Exception as e:
@@ -1752,7 +1759,7 @@ class Camera():
 			self.logger.log(f'Error in addBarcode: {e}.', severity=ub_utils.SEVERITY_ERROR)
 		
 
-	def addUltralytics(self, idName=None, res_rows=None, res_cols=None, fps_target=None, postFunction=None, color=(0,255,255), conf_threshold=0.25, model_name=None, verbose=False, drawBox=None, drawLabel=None, maskOutline=False):
+	def addUltralytics(self, idName=None, res_rows=None, res_cols=None, fps_target=None, postFunction=None, postFunctionArgs={}, color=(0,255,255), conf_threshold=0.25, model_name=None, verbose=False, drawBox=None, drawLabel=None, maskOutline=False):
 		# Start an Ultralytics task ("detect", "segment", "classify", "pose", "obb", "track")
 		try:
 			if (idName not in ["detect", "segment", "classify", "pose", "obb", "track"]):
@@ -1769,11 +1776,11 @@ class Camera():
 			res_cols   = self.defaultFromNone(res_cols,   self.res_cols,   int)
 			fps_target = self.defaultFromNone(fps_target, self.fps_target, int)
 			
-			self.ultralytics[idName] = _Ultralytics(self, idName, res_rows, res_cols, int(fps_target), postFunction, color, conf_threshold, model_name, verbose, drawBox, drawLabel, maskOutline)
+			self.ultralytics[idName] = _Ultralytics(self, idName, res_rows, res_cols, int(fps_target), postFunction, postFunctionArgs, color, conf_threshold, model_name, verbose, drawBox, drawLabel, maskOutline)
 			self.ultralytics[idName].start() 
 			
 		except Exception as e:
-			self.logger.log(f'Error in addFaceDetect: {e}.', severity=ub_utils.SEVERITY_ERROR)
+			self.logger.log(f'Error in addUltralytics: {e}.', severity=ub_utils.SEVERITY_ERROR)
 				
 
 	# FIXME -- Remove this function
@@ -2032,7 +2039,6 @@ class Camera():
 			
 			for d in self.dec['active']:
 				d['function'](img = img, function = d['idName'])
-				
 
 		except Exception as e:
 			self.logger.log(f'Error in decorateFrame: {e}.', severity=ub_utils.SEVERITY_ERROR)
