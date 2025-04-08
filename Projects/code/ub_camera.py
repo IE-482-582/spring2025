@@ -1190,15 +1190,15 @@ class _ROI():
 
 class _Ultralytics():
 	def __init__(self, camObject, idName, res_rows, res_cols, fps_target, postFunction, postFunctionArgs, color, conf_threshold, model_name, verbose, drawBox, drawLabel, maskOutline):
+		self.camObject = camObject  # This is the parent!
+
 		try:
 			from ultralytics import YOLO
 		except Exception as e:
 			self.camObject.logger.log(f'Error in ultralytics import: {e}.', severity=ub_utils.SEVERITY_ERROR)
 			return
 			
-		try:				
-			self.camObject = camObject  # This is the parent!
-								
+		try:												
 			self.idName   = idName          # "detect", "classify", "pose", "obb", "track", or "segment"
 			self.model_name = model_name    # "yolo11n.pt", "yolo11n-cls.pt", etc
 			self.model = YOLO(model_name)
