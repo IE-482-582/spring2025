@@ -586,7 +586,7 @@ roslaunch turtletag demo.launch
 
 
 ### Summary
-Let's review 3 ways to spawn a robot (e.g., a Husky or Turtlebot3) in an Gazebo world.
+Let's review 3 ways to spawn a robot (e.g., a Husky or Turtlebot3) in a Gazebo world.
 
 #### 1. Use existing `.launch` file and run with default parameter values
 For example, take a look at the launch files found at 
