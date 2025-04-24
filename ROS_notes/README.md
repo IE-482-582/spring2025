@@ -1157,16 +1157,28 @@ for i in range(0,100):
 ## 10 - Networking
 
 - Make sure your VM is setup for "bridged" network adapter.
-- Connect to the class Wi-Fi network, with password `ros4ever!`, from your **host** computer (not from your Ubuntu VM).
+- Connect to the class Wi-Fi network from your **host** computer (not from your Ubuntu VM).
+- To find your computer's IP address, issue this command from an Ubuntu terminal:  `ifconfig`.
 - One computer in the network needs to be running `roscore`.  This computer is known as the "ROS master".  You will need to know its IP address.
-    - Once you know the IP address of the "ROS master", issue the following command in a Ubuntu terminal:
+    - **For the "ROS master"**, issue the following command in a Ubuntu terminal:
         ```
-        export ROS_MASTER_URI="http://192.168.0.xxx:11311"
+        export ROS_MASTER_URI="http://xxx.xxx.xxx.xxx:11311"
+        export ROS_HOSTNAME="xxx.xxx.xxx.xxx"
         ```
-        - Replace `xxx` as appropriate
+        - Replace `xxx` as appropriate, based on output from `ifconfig`.
+    - **For all other computers**:
+        ```
+        export ROS_MASTER_URI="http://xxx.xxx.xxx.xxx:11311"
+        export ROS_HOSTNAME="yyy.yyy.yyy.yyy"
+        ```
+        - Replace `xxx` to match the IP address on the "ROS master".
+        - Replace 'yyy' to match **your** IP address.
 
-    - To find **your** computer's IP address, issue this command from an Ubuntu terminal:  `ifconfig`.
-- Type `rostopic list` to see if you are connected
+- Now, the "ROS master" (and nobody else) should start ROS:
+    ```
+    roscore
+    ```    
+- Everyone should type `rostopic list` to see if they are connected.
 
 --- 
 
